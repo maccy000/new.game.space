@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SOLO REACH - 夢の惑星へ</title>
+    <style>
+        :root {
+            --neon-blue: #00f2ff;
+            --neon-red: #ff0055;
+            --neon-green: #39ff14;
+            --bg-dark: #0a0a12;
+        }
+        body {
+            margin: 0;
+            background: var(--bg-dark);
+            color: var(--neon-blue);
+            font-family: 'Courier New', Courier, monospace;
+            overflow: hidden;
+            user-select: none;
+        }
+        #cockpit {
+            display: grid;
+            grid-template-columns: 250px 1fr 300px;
+            grid-template-rows: 1fr 200px;
+            height: 100vh;
+            border: 10px solid #333;
+            box-sizing: border-box;
+            background: radial-gradient(circle at center, #1a1a2e 0%, #0a0a12 100%);
+        }
+
+        /* 中央：メインスクリーン */
+        #main-view {
+            position: relative;
+            grid-column: 2;
+            grid-row: 1;
+            border: 4px solid #444;
+            overflow: hidden;
+            background: black;
+        }
+        #space-canvas { width: 100%; height: 100%; }
+        #distance-meter {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 24px;
+            text-shadow: 0 0 10px var(--neon-blue);
+        }
+
+        /* 左側：リソース管理 */
+        #left-panel {
+            grid-column: 1;
+            grid-row: 1 / span 2;
+            padding: 20px;
+            border-right: 4px solid #444;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        .gauge-container { height: 150px; background: #222; position: relative; border: 1px solid #555; }
+        .gauge-fill { width: 100%; position: absolute; bottom: 0; transition: height 0.1s; }
+        .magnetic-gauge { background: linear-gradient(to top, var(--neon-green), yellow, var(--neon-red)); }
+        
+        /* 右側：素材・修理 */
+        #right-panel {
+            grid-column: 3;
+            grid-row: 1 / span 2;
+            padding: 20px;
+            border-left: 4px solid #444;
+            background: rgba(20, 20, 30, 0.8);
+        }
+        .inventory-item {
+            background: #111;
+            border: 1px solid var(--neon-blue);
+            margin: 10px 0;
+            padding: 10px;
+            cursor: pointer;
+            text-align: center;
+        }
+        .inventory-item:hover { background: #222; }
+
+        /* 下側：操作系 */
+        #bottom-panel {
+            grid-column: 2;
+            grid-row: 2;
+            border-top: 4px solid #444;
+            display: flex;
+            justify-content: space-around;
+            align-items: center;
+            padding: 10px;
+        }
+        .dial-control { text-align: center; }
+        input[type=range] { width: 200px; cursor: pointer; }
+
+        /* 警告通知 */
+        #alert-msg {
+            position: absolute;
+            bottom: 230px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: var(--neon-red);
+            font-weight: bold;
+            display: none;
+            animation: blink 0.5s infinite;
+        }
+        @keyframes blink { 0% { opacity: 0; } 50% { opacity: 1; } 100% { opacity: 0; } }
+
+        /* ゲームオーバー画面 */
+        #overlay {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.9);
+            display: none;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 100;
+        }
+        button {
+            padding: 15px 30px;
+            background: transparent;
+            border: 2px solid var(--neon-blue);
+            color: var(--neon-blue);
+            font-size: 20px;
+            cursor: pointer;
+        }
+        button:hover { background: var(--neon-blue); color: black; }
+    </style>
+</head>
+<body>
+
+<div id="cockpit">
+    <div id="left-panel">
+        <h3>RESOURCES</h3>
+        <div>磁場安定度 (STABILITY)</div>
+        <div class="gauge-container">
+            <div id="mag-fill" class="gauge-fill magnetic-gauge" style="height: 50%;"></div>
+        </div>
+        <div id="mag-value">50.0%</div>
+
+        <div style="margin-top:20px;">酸素 (OXYGEN)</div>
+        <div class="gauge-container" style="height: 30px;">
+            <div id="oxy-fill" class="gauge-fill" style="height: 100%; background: var(--neon-blue); width: 100%;"></div>
+        </div>
+        
+        <div>船体強度 (HULL)</div>
+        <div class="gauge-container" style="height: 30px;">
+            <div id="hull-fill" class="gauge-fill" style="height: 100%; background: orange; width: 100%;"></div>
+        </div>
+    </div>
+
+    <div id="main-view">
+        <canvas id="space-canvas"></canvas>
+        <div id="distance-meter">夢の惑星まで: <span id="dist-val">100,000</span> km</div>
+        <div id="alert-msg">CRITICAL ERROR: MAGNETIC FIELD UNSTABLE</div>
+    </div>
+
+    <div id="right-panel">
+        <h3>INVENTORY</h3>
+        <p style="font-size: 12px;">クリックで消費/修理</p>
+        <div id="inventory">
+            </div>
+        <div style="margin-top: 50px; font-size: 12px; color: #666;">
+            [TIPS]<br>
+            磁場が0%または100%になると爆発します。下のスライダーで常に50%付近を維持してください。
+        </div>
+    </div>
+
+    <div id="bottom-panel">
+        <div class="dial-control">
+            <div>磁場位相調整 (MAGNETIC CONTROL)</div>
+            <input type="range" id="mag-slider" min="-2.0" max="2.0" step="0.1" value="0.5">
+        </div>
+        <div class="dial-control">
+            <div>エンジン出力 (THRUST)</div>
+            <input type="range" id="thrust-slider" min="0" max="100" value="10">
+            <div id="thrust-val">10%</div>
+        </div>
+    </div>
+</div>
+
+<div id="overlay">
+    <h1 id="over-title">MISSION FAILED</h1>
+    <p id="over-msg">核融合炉が暴走し、宇宙の塵となりました。</p>
+    <button onclick="location.reload()">再起動</button>
+</div>
+
+<script>
+    const canvas = document.getElementById('space-canvas');
+    const ctx = canvas.getContext('2d');
+    
+    // ゲーム状態
+    let state = {
+        distance: 100000,
+        stability: 50.0,
+        oxygen: 100.0,
+        hull: 100.0,
+        thrust: 10,
+        magControl: 0.5,
+        scrap: 0,
+        isGameOver: false,
+        stars: []
+    };
+
+    // 初期化
+    function init() {
+        canvas.width = canvas.offsetWidth;
+        canvas.height = canvas.offsetHeight;
+        for(let i=0; i<100; i++) {
+            state.stars.push({
+                x: Math.random() * canvas.width,
+                y: Math.random() * canvas.height,
+                z: Math.random() * canvas.width
+            });
+        }
+        loop();
+    }
+
+    // 入力監視
+    document.getElementById('mag-slider').addEventListener('input', (e) => {
+        state.magControl = parseFloat(e.target.value);
+    });
+    document.getElementById('thrust-slider').addEventListener('input', (e) => {
+        state.thrust = parseInt(e.target.value);
+        document.getElementById('thrust-val').innerText = state.thrust + "%";
+    });
+
+    // メインループ
+    function loop() {
+        if (state.isGameOver) return;
+
+        update();
+        draw();
+        requestAnimationFrame(loop);
+    }
+
+    function update() {
+        // 1. 磁場安定度の計算（無視すると死ぬ要素）
+        // スライダーが中心にないと、安定度が上下に振れる
+        const drift = (Math.random() - 0.5) * 0.5; // 自然な揺らぎ
+        state.stability += (state.magControl + drift);
+
+        // 2. 酸素と燃料の消費
+        state.oxygen -= 0.02;
+        
+        // 3. 距離の更新
+        const speed = (state.thrust / 100) * 20;
+        state.distance -= speed;
+
+        // 4. 異常事態
+        if (state.stability <= 0 || state.stability >= 100) endGame("核融合炉が暴走し、船体は蒸発しました。");
+        if (state.oxygen <= 0) endGame("酸素が尽き、永遠の眠りにつきました。");
+        if (state.distance <= 0) {
+            state.distance = 0;
+            endGame("ついに「夢の惑星」へ到達しました。人類の夜明けです。", "MISSION ACCOMPLISHED");
+        }
+
+        // 5. 確率で素材（スクラップ）発見
+        if (Math.random() < 0.01) {
+            addScrap();
+        }
+
+        // UI更新
+        document.getElementById('mag-fill').style.height = state.stability + "%";
+        document.getElementById('mag-value').innerText = state.stability.toFixed(1) + "%";
+        document.getElementById('oxy-fill').style.width = state.oxygen + "%";
+        document.getElementById('hull-fill').style.width = state.hull + "%";
+        document.getElementById('dist-val').innerText = Math.floor(state.distance).toLocaleString();
+
+        // 警告表示
+        const alertMsg = document.getElementById('alert-msg');
+        if (state.stability < 20 || state.stability > 80) {
+            alertMsg.style.display = 'block';
+        } else {
+            alertMsg.style.display = 'none';
+        }
+    }
+
+    function draw() {
+        ctx.fillStyle = 'black';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // 星の移動
+        ctx.fillStyle = 'white';
+        state.stars.forEach(s => {
+            s.z -= (state.thrust / 10);
+            if (s.z <= 0) s.z = canvas.width;
+            
+            const x = (s.x - canvas.width/2) * (canvas.width/s.z) + canvas.width/2;
+            const y = (s.y - canvas.height/2) * (canvas.width/s.z) + canvas.height/2;
+            const size = (1 - s.z/canvas.width) * 3;
+            
+            ctx.beginPath();
+            ctx.arc(x, y, size, 0, Math.PI*2);
+            ctx.fill();
+        });
+
+        // 夢の惑星（遠くの光）
+        if (state.distance < 50000) {
+            const glow = (1 - state.distance / 50000) * 50;
+            ctx.shadowBlur = glow;
+            ctx.shadowColor = "var(--neon-blue)";
+            ctx.fillStyle = "#fff";
+            ctx.beginPath();
+            ctx.arc(canvas.width/2, canvas.height/2, glow/2, 0, Math.PI*2);
+            ctx.fill();
+            ctx.shadowBlur = 0;
+        }
+    }
+
+    function addScrap() {
+        const inv = document.getElementById('inventory');
+        const item = document.createElement('div');
+        item.className = 'inventory-item';
+        const type = Math.random() > 0.5 ? '宇宙ゴミ(修理用)' : '予備酸素缶';
+        item.innerText = type;
+        item.onclick = () => {
+            if (type === '宇宙ゴミ(修理用)') state.hull = Math.min(100, state.hull + 10);
+            else state.oxygen = Math.min(100, state.oxygen + 15);
+            inv.removeChild(item);
+        };
+        inv.appendChild(item);
+    }
+
+    function endGame(msg, title = "MISSION FAILED") {
+        state.isGameOver = true;
+        document.getElementById('overlay').style.display = 'flex';
+        document.getElementById('over-title').innerText = title;
+        document.getElementById('over-msg').innerText = msg;
+    }
+
+    init();
+</script>
+</body>
+</html>
