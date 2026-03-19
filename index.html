@@ -57,6 +57,7 @@
             display: flex;
             flex-direction: column;
             gap: 20px;
+            position: relative; /* 追加: オーバーレイ用 */
         }
         .gauge-container { height: 150px; background: #222; position: relative; border: 1px solid #555; }
         .gauge-fill { width: 100%; position: absolute; bottom: 0; transition: height 0.1s; }
@@ -96,13 +97,14 @@
         /* 警告通知 */
         #alert-msg {
             position: absolute;
-            bottom: 230px;
+            bottom: 230px; /* 位置を少し上に調整 */
             left: 50%;
             transform: translateX(-50%);
             color: var(--neon-red);
             font-weight: bold;
             display: none;
             animation: blink 0.5s infinite;
+            z-index: 10;
         }
         @keyframes blink { 0% { opacity: 0; } 50% { opacity: 1; } 100% { opacity: 0; } }
 
@@ -126,6 +128,48 @@
             cursor: pointer;
         }
         button:hover { background: var(--neon-blue); color: black; }
+
+        /* ==========================================
+           追加要素のスタイル群
+           ========================================== */
+        /* チュートリアルテキスト */
+        #tutorial-text {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            color: var(--neon-green);
+            background: rgba(0, 0, 0, 0.8);
+            border: 1px solid var(--neon-green);
+            padding: 20px;
+            text-align: center;
+            font-size: 18px;
+            z-index: 20;
+            pointer-events: none;
+            display: none;
+        }
+        /* UIダメージ（ガラスのヒビ） */
+        #glass-crack {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none; z-index: 15; display: none;
+            background: 
+                repeating-linear-gradient(45deg, transparent, transparent 20px, rgba(255,255,255,0.1) 20px, rgba(255,255,255,0.1) 22px),
+                repeating-linear-gradient(-45deg, transparent, transparent 40px, rgba(255,255,255,0.1) 40px, rgba(255,255,255,0.1) 43px);
+        }
+        /* 太陽フレア警告ポップアップ */
+        #warning-popup {
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            background: var(--neon-red); color: white;
+            padding: 30px; border: 4px solid white;
+            font-weight: bold; font-size: 20px; cursor: pointer;
+            z-index: 30; display: none; text-align: center;
+        }
+        /* システムエラー（ブラックアウト） */
+        #blackout-overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: #000; z-index: 30; display: none;
+            flex-direction: column; justify-content: center; align-items: center;
+        }
     </style>
 </head>
 <body>
@@ -148,12 +192,23 @@
         <div class="gauge-container" style="height: 30px;">
             <div id="hull-fill" class="gauge-fill" style="height: 100%; background: orange; width: 100%;"></div>
         </div>
+
+        <div id="blackout-overlay">
+            <div style="color: red; margin-bottom: 20px; font-weight: bold; font-size: 24px;">SYSTEM DOWN</div>
+            <button id="reboot-btn" onclick="rebootSystem()" style="border-color: red; color: red;">REBOOT (0/5)</button>
+        </div>
     </div>
 
     <div id="main-view">
         <canvas id="space-canvas"></canvas>
         <div id="distance-meter">夢の惑星まで: <span id="dist-val">100,000</span> km</div>
         <div id="alert-msg">CRITICAL ERROR: MAGNETIC FIELD UNSTABLE</div>
+        
+        <div id="tutorial-text"></div>
+        <div id="glass-crack"></div>
+        <div id="warning-popup" onclick="this.style.display='none';">
+            ⚠️ ERROR: 太陽フレア干渉！<br>磁場操作が逆転しています！<br><span style="font-size: 14px;">[クリックして閉じる]</span>
+        </div>
     </div>
 
     <div id="right-panel">
@@ -190,7 +245,7 @@
     const canvas = document.getElementById('space-canvas');
     const ctx = canvas.getContext('2d');
     
-    // ゲーム状態
+    // ゲーム状態 (既存要素はそのまま保持)
     let state = {
         distance: 100000,
         stability: 50.0,
@@ -200,13 +255,22 @@
         magControl: 0.5,
         scrap: 0,
         isGameOver: false,
-        stars: []
+        stars: [],
+        
+        // 追加: チュートリアルとイベント用ステータス
+        phase: 1, // 1:磁場テスト, 2:回収テスト, 3:スラストテスト, 4:本編
+        tutorialTimer: 0,
+        eventTimer: 300, // 次のイベントまでのタイマー
+        reverseMag: false, // 太陽フレア用フラグ
+        debrisTarget: null, // デブリ襲来用データ
+        rebootClicks: 0 // 再起動連打用
     };
 
     // 初期化
     function init() {
-        canvas.width = canvas.offsetWidth;
-        canvas.height = canvas.offsetHeight;
+        // キャンバスサイズを親要素に合わせる
+        canvas.width = canvas.parentNode.offsetWidth;
+        canvas.height = canvas.parentNode.offsetHeight;
         for(let i=0; i<100; i++) {
             state.stars.push({
                 x: Math.random() * canvas.width,
@@ -217,13 +281,27 @@
         loop();
     }
 
-    // 入力監視
+    // 入力監視 (既存要素)
     document.getElementById('mag-slider').addEventListener('input', (e) => {
         state.magControl = parseFloat(e.target.value);
     });
     document.getElementById('thrust-slider').addEventListener('input', (e) => {
         state.thrust = parseInt(e.target.value);
         document.getElementById('thrust-val').innerText = state.thrust + "%";
+    });
+
+    // 追加: デブリ迎撃用のキャンバスクリック監視
+    canvas.addEventListener('mousedown', (e) => {
+        if (state.debrisTarget) {
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+            const dist = Math.hypot(mouseX - state.debrisTarget.x, mouseY - state.debrisTarget.y);
+            
+            if (dist < state.debrisTarget.radius + 30) {
+                state.debrisTarget = null; // 迎撃成功
+            }
+        }
     });
 
     // メインループ
@@ -236,44 +314,110 @@
     }
 
     function update() {
-        // 1. 磁場安定度の計算（無視すると死ぬ要素）
-        // スライダーが中心にないと、安定度が上下に振れる
-        const drift = (Math.random() - 0.5) * 0.5; // 自然な揺らぎ
-        state.stability += (state.magControl + drift);
+        // ==========================================
+        // 追加: チュートリアル進行管理
+        // ==========================================
+        const tutText = document.getElementById('tutorial-text');
+        if (state.phase === 1) {
+            tutText.style.display = 'block';
+            tutText.innerHTML = "システム起動...<br>核融合炉を手動で安定させてください。<br>【下のスライダーを操作し、磁場を45〜55%に数秒維持】";
+            if (state.stability > 45 && state.stability < 55) {
+                state.tutorialTimer++;
+                if (state.tutorialTimer > 100) { 
+                    state.phase = 2; state.tutorialTimer = 0; addScrap(); 
+                }
+            } else { state.tutorialTimer = 0; }
+        } else if (state.phase === 2) {
+            tutText.innerHTML = "右舷に修理資材(宇宙ゴミ)を検知。<br>【右パネルのアイテムをクリックして回収テストを実行】";
+            if (document.getElementById('inventory').children.length === 0) { state.phase = 3; }
+        } else if (state.phase === 3) {
+            tutText.innerHTML = "準備完了。<br>【エンジン出力(THRUST)を20%以上に上げて出発】";
+            if (state.thrust >= 20) { 
+                state.phase = 4; tutText.style.display = 'none'; 
+            }
+        }
 
-        // 2. 酸素と燃料の消費
-        state.oxygen -= 0.02;
+        // ==========================================
+        // 既存の update ロジックを内包しつつ拡張
+        // ==========================================
         
-        // 3. 距離の更新
-        const speed = (state.thrust / 100) * 20;
-        state.distance -= speed;
+        // 1. 磁場安定度の計算
+        const drift = (Math.random() - 0.5) * 0.5; // 自然な揺らぎ
+        
+        // 追加: 太陽フレア時のスライダー逆転処理
+        let currentMag = state.magControl;
+        if (state.reverseMag) currentMag = -currentMag;
+        
+        state.stability += (currentMag + drift);
 
-        // 4. 異常事態
-        if (state.stability <= 0 || state.stability >= 100) endGame("核融合炉が暴走し、船体は蒸発しました。");
-        if (state.oxygen <= 0) endGame("酸素が尽き、永遠の眠りにつきました。");
-        if (state.distance <= 0) {
-            state.distance = 0;
-            endGame("ついに「夢の惑星」へ到達しました。人類の夜明けです。", "MISSION ACCOMPLISHED");
+        // チュートリアル中(phase 1~3)は死なないように制限
+        if (state.phase < 4) {
+            if (state.stability < 10) state.stability = 10;
+            if (state.stability > 90) state.stability = 90;
+        } else {
+            // --- ここから本編（既存ロジック） ---
+            
+            // 2. 酸素の消費
+            state.oxygen -= 0.02;
+            
+            // 3. 距離の更新
+            const speed = (state.thrust / 100) * 20;
+            state.distance -= speed;
+
+            // 4. 異常事態
+            if (state.stability <= 0 || state.stability >= 100) endGame("核融合炉が暴走し、船体は蒸発しました。");
+            if (state.oxygen <= 0) endGame("酸素が尽き、永遠の眠りにつきました。");
+            if (state.distance <= 0) {
+                state.distance = 0;
+                endGame("ついに「夢の惑星」へ到達しました。人類の夜明けです。", "MISSION ACCOMPLISHED");
+            }
+
+            // 5. 確率で素材発見
+            if (Math.random() < 0.01) {
+                addScrap();
+            }
+
+            // ==========================================
+            // 追加: ランダムイベントの発生と進行
+            // ==========================================
+            state.eventTimer--;
+            if (state.eventTimer <= 0) {
+                triggerRandomEvent();
+                state.eventTimer = 300 + Math.random() * 400; // 次のイベントまでの間隔
+            }
+
+            // デブリ（隕石）が迫ってくる処理
+            if (state.debrisTarget) {
+                state.debrisTarget.radius += 0.4;
+                if (state.debrisTarget.radius > 120) {
+                    state.hull -= 30; // 迎撃失敗でダメージ
+                    state.debrisTarget = null;
+                    if (state.hull <= 0) endGame("デブリの衝突により船体が破壊されました。");
+                }
+            }
         }
 
-        // 5. 確率で素材（スクラップ）発見
-        if (Math.random() < 0.01) {
-            addScrap();
-        }
-
-        // UI更新
+        // ==========================================
+        // UIの更新 (既存ロジック)
+        // ==========================================
         document.getElementById('mag-fill').style.height = state.stability + "%";
         document.getElementById('mag-value').innerText = state.stability.toFixed(1) + "%";
-        document.getElementById('oxy-fill').style.width = state.oxygen + "%";
-        document.getElementById('hull-fill').style.width = state.hull + "%";
+        document.getElementById('oxy-fill').style.width = Math.max(0, state.oxygen) + "%";
+        document.getElementById('hull-fill').style.width = Math.max(0, state.hull) + "%";
         document.getElementById('dist-val').innerText = Math.floor(state.distance).toLocaleString();
 
-        // 警告表示
         const alertMsg = document.getElementById('alert-msg');
         if (state.stability < 20 || state.stability > 80) {
             alertMsg.style.display = 'block';
         } else {
             alertMsg.style.display = 'none';
+        }
+
+        // 追加: UIへの物理的ダメージ（ヒビ割れ）
+        if (state.hull <= 50) {
+            document.getElementById('glass-crack').style.display = 'block';
+        } else {
+            document.getElementById('glass-crack').style.display = 'none';
         }
     }
 
@@ -281,7 +425,7 @@
         ctx.fillStyle = 'black';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-        // 星の移動
+        // 星の移動 (既存)
         ctx.fillStyle = 'white';
         state.stars.forEach(s => {
             s.z -= (state.thrust / 10);
@@ -296,7 +440,7 @@
             ctx.fill();
         });
 
-        // 夢の惑星（遠くの光）
+        // 夢の惑星 (既存)
         if (state.distance < 50000) {
             const glow = (1 - state.distance / 50000) * 50;
             ctx.shadowBlur = glow;
@@ -307,8 +451,32 @@
             ctx.fill();
             ctx.shadowBlur = 0;
         }
+
+        // ==========================================
+        // 追加: デブリ（隕石）の描画
+        // ==========================================
+        if (state.debrisTarget) {
+            // ターゲット円
+            ctx.strokeStyle = 'var(--neon-red)';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.arc(state.debrisTarget.x, state.debrisTarget.y, state.debrisTarget.radius, 0, Math.PI * 2);
+            ctx.stroke();
+            
+            // 隕石本体
+            ctx.fillStyle = 'rgba(255, 50, 50, 0.6)';
+            ctx.beginPath();
+            ctx.arc(state.debrisTarget.x, state.debrisTarget.y, 15, 0, Math.PI * 2);
+            ctx.fill();
+
+            // 警告文字
+            ctx.fillStyle = 'var(--neon-red)';
+            ctx.font = '16px monospace';
+            ctx.fillText("!! CLICK TO DESTROY !!", state.debrisTarget.x - 100, state.debrisTarget.y - state.debrisTarget.radius - 10);
+        }
     }
 
+    // 既存のアイテム追加ロジック
     function addScrap() {
         const inv = document.getElementById('inventory');
         const item = document.createElement('div');
@@ -316,8 +484,8 @@
         const type = Math.random() > 0.5 ? '宇宙ゴミ(修理用)' : '予備酸素缶';
         item.innerText = type;
         item.onclick = () => {
-            if (type === '宇宙ゴミ(修理用)') state.hull = Math.min(100, state.hull + 10);
-            else state.oxygen = Math.min(100, state.oxygen + 15);
+            if (type === '宇宙ゴミ(修理用)') state.hull = Math.min(100, state.hull + 15);
+            else state.oxygen = Math.min(100, state.oxygen + 20);
             inv.removeChild(item);
         };
         inv.appendChild(item);
@@ -329,6 +497,53 @@
         document.getElementById('over-title').innerText = title;
         document.getElementById('over-msg').innerText = msg;
     }
+
+    // ==========================================
+    // 追加: ランダムイベント制御関数
+    // ==========================================
+    function triggerRandomEvent() {
+        const rand = Math.random();
+        
+        if (rand < 0.33) {
+            // イベント1：システムエラー（ブラックアウト）
+            state.rebootClicks = 0;
+            document.getElementById('blackout-overlay').style.display = 'flex';
+            document.getElementById('reboot-btn').innerText = "REBOOT (0/5)";
+        } 
+        else if (rand < 0.66) {
+            // イベント2：太陽フレア（磁場操作の逆転）
+            state.reverseMag = true;
+            document.getElementById('warning-popup').style.display = 'block';
+            setTimeout(() => {
+                state.reverseMag = false; // 7秒後に解除
+            }, 7000);
+        } 
+        else {
+            // イベント3：デブリ襲来（キャンバス上で迎撃）
+            if (!state.debrisTarget) {
+                state.debrisTarget = {
+                    x: Math.random() * (canvas.width - 200) + 100,
+                    y: Math.random() * (canvas.height - 200) + 100,
+                    radius: 20
+                };
+            }
+        }
+    }
+
+    // システム再起動ボタン（連打用）
+    window.rebootSystem = function() {
+        state.rebootClicks++;
+        document.getElementById('reboot-btn').innerText = `REBOOT (${state.rebootClicks}/5)`;
+        if (state.rebootClicks >= 5) {
+            document.getElementById('blackout-overlay').style.display = 'none';
+        }
+    };
+
+    // リサイズ対応
+    window.addEventListener('resize', () => {
+        canvas.width = canvas.parentNode.offsetWidth;
+        canvas.height = canvas.parentNode.offsetHeight;
+    });
 
     init();
 </script>
